@@ -1,80 +1,67 @@
-// server.js
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-const multer = require('multer');
-const FormData = require('form-data');
-const fs = require('fs');
+import express from "express";
+import fetch from "node-fetch";
+import cors from "cors";
+import multer from "multer";
 
 const app = express();
-app.use(cors()); // dev: allow all origins; lock down in production
-app.use(express.json({ limit: '10mb' }));
+app.use(cors());
+app.use(express.json());
 
-const JIRA_BASE = process.env.JIRA_BASE || 'https://daato.atlassian.net';
-const EMAIL = process.env.JIRA_EMAIL;
-const TOKEN = process.env.JIRA_TOKEN;
-const AUTH = 'Basic ' + Buffer.from(`${EMAIL}:${TOKEN}`).toString('base64');
+const upload = multer(); // for file uploads
 
-const upload = multer({ dest: 'uploads/' });
+// 🔑 Environment variables (set these in Render Dashboard)
+const JIRA_BASE_URL = process.env.JIRA_BASE_URL; // e.g. https://your-domain.atlassian.net
+const JIRA_EMAIL = process.env.JIRA_EMAIL;
+const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 
-// create issue (expecting Jira ADF body or same fields)
-app.post('/jira/create-issue', async (req, res) => {
+// Create Jira Issue
+app.post("/create-issue", async (req, res) => {
   try {
-    const jiraResp = await axios.post(
-      `${JIRA_BASE}/rest/api/3/issue`,
-      req.body,
-      {
-        headers: {
-          Authorization: AUTH,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    res.status(jiraResp.status).json(jiraResp.data);
-  } catch (err) {
-    const status = err.response?.status || 500;
-    const data = err.response?.data || { error: err.message };
-    res.status(status).json(data);
-  }
-});
+    const { projectKey, summary, description, issueType, parentKey } = req.body;
 
-// attach files to a Jira issue
-app.post('/jira/attach/:issueKey', upload.array('files'), async (req, res) => {
-  const issueKey = req.params.issueKey;
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: 'No files uploaded' });
-  }
-  try {
-    const form = new FormData();
-    for (const file of req.files) {
-      form.append('file', fs.createReadStream(file.path), file.originalname);
+    const bodyData = {
+      fields: {
+        project: { key: projectKey },
+        summary,
+        description,
+        issuetype: { name: issueType || "Bug" },
+      },
+    };
+
+    if (parentKey) {
+      bodyData.fields.parent = { key: parentKey };
     }
-    const jiraResp = await axios.post(
-      `${JIRA_BASE}/rest/api/3/issue/${issueKey}/attachments`,
-      form,
-      {
-        headers: {
-          Authorization: AUTH,
-          'X-Atlassian-Token': 'no-check',
-          ...form.getHeaders(),
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      }
-    );
 
-    // cleanup temp files
-    for (const file of req.files) fs.unlinkSync(file.path);
-    res.status(jiraResp.status).json(jiraResp.data);
+    const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue`, {
+      method: "POST",
+      headers: {
+        "Authorization":
+          "Basic " + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString("base64"),
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(bodyData),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Jira error:", data);
+      return res.status(response.status).json(data);
+    }
+
+    res.json(data);
   } catch (err) {
-    for (const file of req.files) if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    const status = err.response?.status || 500;
-    const data = err.response?.data || { error: err.message };
-    res.status(status).json(data);
+    console.error("Server error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
+// Health check
+app.get("/", (req, res) => {
+  res.send("Jira Proxy is running ✅");
+});
+
+// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Jira proxy running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Jira proxy running on port ${PORT}`));

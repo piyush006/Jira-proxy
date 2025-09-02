@@ -14,13 +14,13 @@ app.use(express.json({ limit: '10mb' }));
 
 const upload = multer({ dest: path.join(__dirname, 'uploads/') });
 
-// Env (set these in Render Environment or local .env)
-const JIRA_BASE = process.env.JIRA_BASE_URL || 'https://daato.atlassian.net';
-const JIRA_EMAIL = process.env.JIRA_EMAIL || 'piyush.soni@47billion.com';
-const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN || 'ATATT3xFfGF0yfNHhbTN4lkftc59nbMrIrMgQeUH3kDNjKu-ARucNtn5Sb0q7rlhk_FGbLrb1V9yOJQLJVGfIpL0gORu1x7NZjwuGONxj-NcfES9lvqGMKCB4hcf7A2sOMytFuEhaqeC-EIIftZEwvaU0_8PPEm9wE8nhMe47Lr6H_VYB1Dupgc=594BC611';
+// Env (set these in Render Environment or local .env — NO HARDCODED FALLBACKS)
+const JIRA_BASE = process.env.JIRA_BASE_URL;
+const JIRA_EMAIL = process.env.JIRA_EMAIL;
+const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 
 if (!JIRA_BASE || !JIRA_EMAIL || !JIRA_API_TOKEN) {
-  console.error('Missing JIRA_BASE_URL, JIRA_EMAIL or JIRA_API_TOKEN in env vars.');
+  console.error('❌ Missing JIRA_BASE_URL, JIRA_EMAIL or JIRA_API_TOKEN in env vars.');
   process.exit(1);
 }
 
@@ -29,8 +29,6 @@ const AUTH = 'Basic ' + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString(
 // --------------- Create issue (handles parent issue for subtask when parentKey provided) ---------------
 app.post('/jira/create-issue', async (req, res) => {
   try {
-    // Expecting simplified body from Flutter:
-    // { projectKey, summary, description, issueType, priority, parentIssueKey?, labels? }
     const {
       projectKey,
       summary,
@@ -41,7 +39,6 @@ app.post('/jira/create-issue', async (req, res) => {
       labels,
     } = req.body;
 
-    // Build Jira ADF description as a simple paragraph.
     const jiraBody = {
       fields: {
         project: { key: projectKey },
@@ -119,7 +116,6 @@ app.post('/jira/attach/:issueKey', upload.array('files'), async (req, res) => {
 
     return res.status(jiraResp.status).json(jiraResp.data);
   } catch (err) {
-    // cleanup temp files on error
     for (const file of req.files || []) {
       try { fs.unlinkSync(file.path); } catch (_) {}
     }

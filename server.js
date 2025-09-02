@@ -1,89 +1,138 @@
-// server.js
-import express from "express";
-import fetch from "node-fetch";
-import multer from "multer";
-import dotenv from "dotenv";
-
-dotenv.config(); // load .env locally, Render uses environment variables
+// server.js (CommonJS)
+require('dotenv').config();
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+const multer = require('multer');
+const FormData = require('form-data');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-app.use(express.json());
+app.use(cors()); // Allow all origins for dev; lock to origins in prod.
+app.use(express.json({ limit: '10mb' }));
 
-// Environment variables (from .env or Render)
-const JIRA_BASE = process.env.JIRA_BASE_URL || "https://daato.atlassian.net";
-const JIRA_EMAIL = process.env.JIRA_EMAIL || "piyush.soni@47billion.com";
-const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN || "ATATT3xFfGF0yfNHhbTN4lkftc59nbMrIrMgQeUH3kDNjKu-ARucNtn5Sb0q7rlhk_FGbLrb1V9yOJQLJVGfIpL0gORu1x7NZjwuGONxj-NcfES9lvqGMKCB4hcf7A2sOMytFuEhaqeC-EIIftZEwvaU0_8PPEm9wE8nhMe47Lr6H_VYB1Dupgc=594BC611";
+const upload = multer({ dest: path.join(__dirname, 'uploads/') });
+
+// Env (set these in Render Environment or local .env)
+const JIRA_BASE = process.env.JIRA_BASE_URL || 'https://daato.atlassian.net';
+const JIRA_EMAIL = process.env.JIRA_EMAIL || 'piyush.soni@47billion.com';
+const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN || 'ATATT3xFfGF0yfNHhbTN4lkftc59nbMrIrMgQeUH3kDNjKu-ARucNtn5Sb0q7rlhk_FGbLrb1V9yOJQLJVGfIpL0gORu1x7NZjwuGONxj-NcfES9lvqGMKCB4hcf7A2sOMytFuEhaqeC-EIIftZEwvaU0_8PPEm9wE8nhMe47Lr6H_VYB1Dupgc=594BC611';
 
 if (!JIRA_BASE || !JIRA_EMAIL || !JIRA_API_TOKEN) {
-  console.error("❌ Missing Jira configuration. Please set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN.");
-  process.exit(1); // stop app if env vars are missing
+  console.error('Missing JIRA_BASE_URL, JIRA_EMAIL or JIRA_API_TOKEN in env vars.');
+  process.exit(1);
 }
 
-// Basic Auth header
-const AUTH_HEADER = "Basic " + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString("base64");
+const AUTH = 'Basic ' + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 
-// Multer for file uploads
-const upload = multer({ dest: "uploads/" });
-
-// ✅ Create Jira Issue
-app.post("/jira/create-issue", async (req, res) => {
+// --------------- Create issue (handles parent issue for subtask when parentKey provided) ---------------
+app.post('/jira/create-issue', async (req, res) => {
   try {
-    const response = await fetch(`${JIRA_BASE}/rest/api/3/issue`, {
-      method: "POST",
-      headers: {
-        "Authorization": AUTH_HEADER,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
+    // Expecting simplified body from Flutter:
+    // { projectKey, summary, description, issueType, priority, parentIssueKey?, labels? }
+    const {
+      projectKey,
+      summary,
+      description,
+      issueType = 'Bug',
+      priority = 'Medium',
+      parentIssueKey,
+      labels,
+    } = req.body;
+
+    // Build Jira ADF description as a simple paragraph.
+    const jiraBody = {
+      fields: {
+        project: { key: projectKey },
+        summary,
+        description: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: description ?? '' }],
+            },
+          ],
+        },
+        issuetype: { name: issueType },
+        priority: { name: priority },
       },
-      body: JSON.stringify(req.body),
-    });
+    };
 
-    const data = await response.json();
-    res.status(response.status).json(data);
-  } catch (error) {
-    console.error("Error creating issue:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ✅ Attach File to Jira Issue
-app.post("/jira/attach/:issueKey", upload.array("files"), async (req, res) => {
-  const issueKey = req.params.issueKey;
-
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: "No files uploaded" });
-  }
-
-  try {
-    const formData = new FormData();
-    for (const file of req.files) {
-      formData.append("file", fs.createReadStream(file.path), file.originalname);
+    if (labels && Array.isArray(labels) && labels.length) {
+      jiraBody.fields.labels = labels;
+    }
+    if (parentIssueKey && parentIssueKey.toString().trim().length) {
+      jiraBody.fields.parent = { key: parentIssueKey };
     }
 
-    const response = await fetch(`${JIRA_BASE}/rest/api/3/issue/${issueKey}/attachments`, {
-      method: "POST",
+    const jiraResp = await axios.post(`${JIRA_BASE}/rest/api/3/issue`, jiraBody, {
       headers: {
-        "Authorization": AUTH_HEADER,
-        "X-Atlassian-Token": "no-check",
-        ...formData.getHeaders(),
+        Authorization: AUTH,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
       },
-      body: formData,
     });
 
-    const data = await response.json();
-
-    // Cleanup temp files
-    req.files.forEach(file => fs.unlinkSync(file.path));
-
-    res.status(response.status).json(data);
-  } catch (error) {
-    console.error("Error attaching file:", error);
-    res.status(500).json({ error: error.message });
+    return res.status(jiraResp.status).json(jiraResp.data);
+  } catch (err) {
+    console.error('Error creating Jira issue:', err.response?.data ?? err.message);
+    const status = err.response?.status || 500;
+    const data = err.response?.data || { error: err.message };
+    return res.status(status).json(data);
   }
 });
 
-// Start Server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Jira Proxy running on http://localhost:${PORT}`);
+// --------------- Attach files to issue ---------------
+app.post('/jira/attach/:issueKey', upload.array('files'), async (req, res) => {
+  const issueKey = req.params.issueKey;
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: 'No files uploaded' });
+  }
+
+  try {
+    const form = new FormData();
+    for (const file of req.files) {
+      form.append('file', fs.createReadStream(file.path), file.originalname);
+    }
+
+    const jiraResp = await axios.post(
+      `${JIRA_BASE}/rest/api/3/issue/${issueKey}/attachments`,
+      form,
+      {
+        headers: {
+          Authorization: AUTH,
+          'X-Atlassian-Token': 'no-check',
+          ...form.getHeaders(),
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+
+    // cleanup temp files
+    for (const file of req.files) {
+      try { fs.unlinkSync(file.path); } catch (_) {}
+    }
+
+    return res.status(jiraResp.status).json(jiraResp.data);
+  } catch (err) {
+    // cleanup temp files on error
+    for (const file of req.files || []) {
+      try { fs.unlinkSync(file.path); } catch (_) {}
+    }
+    console.error('Error attaching files:', err.response?.data ?? err.message);
+    const status = err.response?.status || 500;
+    const data = err.response?.data || { error: err.message };
+    return res.status(status).json(data);
+  }
 });
+
+// health
+app.get('/', (req, res) => res.send('Jira proxy OK'));
+
+// start
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Jira proxy running on port ${PORT}`));
